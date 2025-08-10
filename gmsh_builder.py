@@ -189,66 +189,136 @@ class GmshGenerator:
             if not found_next:
                 raise Exception("Could not form a closed loop from exterior curves.")
         return sorted_curves
-
     def _assign_physical_groups(self):
         """Assigns physical tags to the final surfaces and boundary lines."""
         print("Assigning physical groups...")
         
         tagged_surfaces = set()
 
-        # 1. Process non-hole inclusions first to avoid mis-tagging larger domains
+        # Debug: Print all surfaces and their properties
+        print(f"Total surfaces to tag: {len(self.final_surfaces)}")
+        for i, (surface_dim, surface_tag) in enumerate(self.final_surfaces):
+            com = gmsh.model.occ.getCenterOfMass(surface_dim, surface_tag)
+            area = gmsh.model.occ.getMass(surface_dim, surface_tag)
+            print(f"Surface {surface_tag}: COM=({com[0]:.3f}, {com[1]:.3f}), Area={area:.4f}")
+
+        # 1. Process non-hole inclusions first - these should be the smallest, most precisely defined
         inclusions = {name: props for name, props in self.data.get("inclusions", {}).items() if not props.get("is_hole", False)}
+        
         for name, domain_info in inclusions.items():
             physical_tag = domain_info["tag"]
+            best_match = None
+            best_score = float('inf')
+            
             for surface_dim, surface_tag in self.final_surfaces:
                 if surface_tag in tagged_surfaces:
                     continue
                 
                 com = gmsh.model.occ.getCenterOfMass(surface_dim, surface_tag)
+                area = gmsh.model.occ.getMass(surface_dim, surface_tag)
                 
-                # Heuristic for the ellipse: check if COM is close to its defined center
-                is_match = False
-                if name == "EllipseDomain":
+                if domain_info["type"] == "polygon":
+                    polygon_points = domain_info["points"]
+                    expected_area = self._polygon_area(polygon_points)
+                    
+                    # Calculate polygon centroid
+                    poly_centroid_x = sum(p[0] for p in polygon_points) / len(polygon_points)
+                    poly_centroid_y = sum(p[1] for p in polygon_points) / len(polygon_points)
+                    
+                    # Distance from surface COM to polygon centroid
+                    dist = math.sqrt((com[0] - poly_centroid_x)**2 + (com[1] - poly_centroid_y)**2)
+                    area_diff = abs(area - expected_area) / expected_area
+                    
+                    # Score based on distance and area difference
+                    score = dist + area_diff
+                    
+                    if score < best_score and area_diff < 0.2:  # 20% area tolerance
+                        best_score = score
+                        best_match = surface_tag
+                
+                elif domain_info["type"] == "ellipse":
                     center = domain_info["center"]
-                    if math.isclose(com[0], center[0], abs_tol=0.1) and math.isclose(com[1], center[1], abs_tol=0.1):
-                        is_match = True
+                    rx, ry = domain_info["radius_x"], domain_info["radius_y"]
+                    expected_area = math.pi * rx * ry
+                    
+                    # Distance from surface COM to ellipse center
+                    dist = math.sqrt((com[0] - center[0])**2 + (com[1] - center[1])**2)
+                    area_diff = abs(area - expected_area) / expected_area
+                    
+                    # Score based on distance and area difference
+                    score = dist + area_diff
+                    
+                    if score < best_score and area_diff < 0.2:  # 20% area tolerance
+                        best_score = score
+                        best_match = surface_tag
+            
+            if best_match is not None:
+                gmsh.model.addPhysicalGroup(2, [best_match], physical_tag)
+                gmsh.model.setPhysicalName(2, physical_tag, name)
+                tagged_surfaces.add(best_match)
+                com = gmsh.model.occ.getCenterOfMass(2, best_match)
+                area = gmsh.model.occ.getMass(2, best_match)
+                print(f"Tagged surface {best_match} as {name} (COM: {com[0]:.3f}, {com[1]:.3f}, area: {area:.4f})")
 
-                if is_match:
-                     gmsh.model.addPhysicalGroup(2, [surface_tag], physical_tag)
-                     gmsh.model.setPhysicalName(2, physical_tag, name)
-                     tagged_surfaces.add(surface_tag)
-                     break
-
-        # 2. Process the main subdomains
+        # 2. Process main subdomains - identify by geometric position
+        # For this specific case, we know LeftDomain should be on the left (x < 1) and RightDomain on the right (x > 1)
         subdomains = self.data["subdomains"]
+        
         for name, domain_info in subdomains.items():
             physical_tag = domain_info["tag"]
+            
             for surface_dim, surface_tag in self.final_surfaces:
                 if surface_tag in tagged_surfaces:
                     continue
                 
                 com = gmsh.model.occ.getCenterOfMass(surface_dim, surface_tag)
+                area = gmsh.model.occ.getMass(surface_dim, surface_tag)
                 
-                # Heuristics for the main domains
+                # Use geometric positioning to identify domains
                 is_match = False
-                if name == "LeftDomain" and com[0] < 1.0:
-                    is_match = True
-                elif name == "RightDomain" and com[0] > 1.0:
-                    is_match = True
-
+                
+                if name == "LeftDomain":
+                    # LeftDomain should have COM with x < 1.0 and reasonable area
+                    if com[0] < 1.0 and area > 0.2:  # Reasonable area threshold
+                        is_match = True
+                
+                elif name == "RightDomain":
+                    # RightDomain should have COM with x > 1.0 and reasonable area
+                    if com[0] > 1.0 and area > 0.2:  # Reasonable area threshold
+                        is_match = True
+                
                 if is_match:
-                     gmsh.model.addPhysicalGroup(2, [surface_tag], physical_tag)
-                     gmsh.model.setPhysicalName(2, physical_tag, name)
-                     tagged_surfaces.add(surface_tag)
-                     break
+                    gmsh.model.addPhysicalGroup(2, [surface_tag], physical_tag)
+                    gmsh.model.setPhysicalName(2, physical_tag, name)
+                    tagged_surfaces.add(surface_tag)
+                    print(f"Tagged surface {surface_tag} as {name} (COM: {com[0]:.3f}, {com[1]:.3f}, area: {area:.4f})")
+                    break
 
-        # 3. Process boundary conditions
-        # WARNING: This part is still not fully robust as fragment changes curve tags.
+        # 3. Tag any remaining untagged surfaces with a default tag for debugging
+        for surface_dim, surface_tag in self.final_surfaces:
+            if surface_tag not in tagged_surfaces:
+                com = gmsh.model.occ.getCenterOfMass(surface_dim, surface_tag)
+                area = gmsh.model.occ.getMass(surface_dim, surface_tag)
+                print(f"WARNING: Untagged surface {surface_tag} (COM: {com[0]:.3f}, {com[1]:.3f}, area: {area:.4f})")
+
+        # 4. Process boundary conditions - use original curve mapping
         for bc_name, bc_info in self.data["boundary_conditions"].items():
             bc_curve_ids = [self.curve_map[tag] for tag in bc_info["curves"]]
             bc_tag = bc_info["tag"]
             gmsh.model.addPhysicalGroup(1, bc_curve_ids, bc_tag)
             gmsh.model.setPhysicalName(1, bc_tag, bc_name)
+
+
+
+    def _polygon_area(self, polygon_points):
+        """Calculate the area of a polygon using the shoelace formula."""
+        n = len(polygon_points)
+        area = 0.0
+        for i in range(n):
+            j = (i + 1) % n
+            area += polygon_points[i][0] * polygon_points[j][1]
+            area -= polygon_points[j][0] * polygon_points[i][1]
+        return abs(area) / 2.0
 
     def generate_mesh(self):
         """Runs the entire mesh generation pipeline."""
