@@ -1,0 +1,55 @@
+{
+    "points": {
+        "P1": [0.0, 0.0, 0.0, 0.1],
+        "P2": [1.0, 0.0, 0.0, 0.1],
+        "P3": [1.0, 1.0, 0.0, 0.05],
+        "P4": [0.0, 1.0, 0.0, 0.1],
+        "P5": [2.0, 1.0, 0.0, 0.1],
+        "P6": [2.0, 0.0, 0.0, 0.1],
+        "P_center": [1.5, 1.0, 0.0, 0.1]
+    },
+    "curves": {
+        "C1": {"type": "line", "points": ["P1", "P2"]},
+        "C2": {"type": "line", "points": ["P2", "P6"]},
+        "C3": {"type": "line", "points": ["P6", "P5"]},
+        "C4": {"type": "arc",  "points": ["P5", "P_center", "P3"]},
+        "C5": {"type": "line", "points": ["P3", "P4"]},
+        "C6": {"type": "line", "points": ["P4", "P1"]},
+        "C_internal": {"type": "line", "points": ["P2", "P3"]}
+    },
+    "subdomains": {
+        "LeftDomain":  {"curves": ["C1", "C_internal", "C5", "C6"], "tag": 101},
+        "RightDomain": {"curves": ["C2", "C3", "C4", "C_internal"], "tag": 102}
+    },
+        "inclusions": {
+        "PolyHole": {
+            "type": "polygon",
+            "points": [
+                [0.4, 0.2, 0], 
+                [0.7, 0.2, 0], 
+                [0.6, 0.4, 0]
+            ],
+            "mesh_size": 0.005,
+            "is_hole": false,
+            "tag": 103
+        },
+        "EllipseDomain": {
+            "type": "ellipse",
+            "center": [1.5, 0.5, 0],
+            "radius_x": 0.3,
+            "radius_y": 0.15,
+            "rotation_angle": 45,
+            "mesh_size": 0.001,
+            "is_hole": false,
+            "tag": 104
+        }
+    },
+    "boundary_conditions": {
+        "bottom_boundary": {"curves": ["C1", "C2"], "tag": 201},
+        "outer_boundary": {"curves": ["C3", "C4", "C5", "C6"], "tag": 202}
+    },
+    "mesh_options": {
+        "element_type": "T3",
+        "show_gui": true
+    }
+}
